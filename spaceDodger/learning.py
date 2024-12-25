@@ -34,26 +34,17 @@ class DQN(nn.Module):
         return self.fc4(x)
 
 class SpaceDodgerAI:
-    def __init__(self, model_path="best_model.pth"):
+    def __init__(self, model_path="best_model.pth", fine_tune=True):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = DQN().to(self.device)
         self.target_model = DQN().to(self.device)
-        
-        # Try to load existing model
-        if os.path.exists(model_path):
-            try:
-                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
-                self.target_model.load_state_dict(self.model.state_dict())
-                print(f"Successfully loaded model from {model_path}")
-            except Exception as e:
-                print(f"Error loading model: {e}")
-        
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.00025)  # Reduced learning rate
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.00025)
         self.memory = deque(maxlen=100000)
         
-        self.batch_size = 128  # Increased batch size
-        self.gamma = 0.99      # Discount factor
-        self.epsilon = 1.0     # Start with full exploration
+        # Initialize training parameters
+        self.batch_size = 128
+        self.gamma = 0.99
+        self.epsilon = 1.0
         self.epsilon_min = 0.02
         self.epsilon_decay = 0.9997
         self.target_update = 10
@@ -61,7 +52,15 @@ class SpaceDodgerAI:
         
         # Experience replay priorities
         self.priority_weight = 0.6
-        self.recent_memories = deque(maxlen=1000)  # Store recent experiences with higher priority
+        self.recent_memories = deque(maxlen=1000)
+        
+        # Load model if it exists
+        if os.path.exists(model_path):
+            try:
+                self.load(model_path, fine_tune=fine_tune)
+            except Exception as e:
+                print(f"Error loading model: {e}")
+                print("Starting with a fresh model")
 
     def get_state(self, ship, asteroids):
         # Find the next two asteroids
@@ -151,13 +150,43 @@ class SpaceDodgerAI:
 
     def save(self, filename):
         print(f"Saving model to {filename}")
-        torch.save(self.model.state_dict(), filename)
+        checkpoint = {
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'epsilon': self.epsilon,
+            'training_step': self.training_step,
+            'memory': list(self.memory)[-1000:],  # Save last 1000 experiences
+        }
+        torch.save(checkpoint, filename)
 
-    def load(self, filename):
+    def load(self, filename, fine_tune=True):
         if os.path.exists(filename):
             print(f"Loading model from {filename}")
-            self.model.load_state_dict(torch.load(filename, map_location=self.device))
-            self.target_model.load_state_dict(self.model.state_dict())
-            self.epsilon = self.epsilon_min  # Use minimal exploration for loaded models
+            checkpoint = torch.load(filename, map_location=self.device)
+            
+            # Load model and optimizer states
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.target_model.load_state_dict(checkpoint['model_state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            
+            if fine_tune:
+                # For fine-tuning, set a higher epsilon to allow some exploration
+                self.epsilon = max(0.1, checkpoint.get('epsilon', 0.1))
+                # Adjust learning rate for fine-tuning
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = 0.0001  # Lower learning rate for fine-tuning
+                
+                # Load previous training state
+                self.training_step = checkpoint.get('training_step', 0)
+                
+                # Load saved experiences if available
+                if 'memory' in checkpoint:
+                    saved_memory = checkpoint['memory']
+                    self.memory.extend(saved_memory)
+                    print(f"Loaded {len(saved_memory)} previous experiences")
+            else:
+                # For inference only
+                self.epsilon = self.epsilon_min
+                print("Model loaded for inference only")
         else:
-            print(f"No model found at {filename}")
+            print(f"No model found at {filename}, starting with a new model")
